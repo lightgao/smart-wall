@@ -4,6 +4,11 @@
 #include <SPI.h>
 #define uchar   unsigned char
 #define uint    unsigned int
+#define ulong   unsigned long
+
+
+//----------------------------------------------------------------------------------------------------------
+
 
 //#define     DEBUG_MOD
 
@@ -21,29 +26,30 @@ void debugInfo(char *str,  uint len=0, uchar *data=NULL)
 #endif
 }
 
- 
+void debugInfo(char *str, char *text)
+{
+#ifdef DEBUG_MOD
+    Serial.print(str);
+    Serial.println(text);
+#endif
+}
+
 //----------------------------------------------------------------------------------------------------------
  
+int iTemp;
+uchar ucTemp;
 
+//Buzzer
 const int buzzerPin = A0;
-
-const int ledRedPin = A1;
-const int ledGreenPin = A2;
-const int ledBluePin = A3;
-
-const byte ROWS=4;
-const byte COLS=4;
-byte keypadRowPins[ROWS] = {9,8,7,6};
-byte keypadColPins[COLS] = {5,4,3,2};
-//byte keypadRowPins[ROWS] = {2,3,4,5};
-//byte keypadColPins[COLS] = {6,7,8,9};
-
 
 //LCD
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-
 //Keypad
+const byte ROWS=4;
+const byte COLS=4;
+byte keypadRowPins[ROWS] = {9,8,7,6};
+byte keypadColPins[COLS] = {5,4,3,2};
 char keys[ROWS][COLS] = {
   {'1','2','3','A'}, 
   {'4','5','6','B'}, 
@@ -52,22 +58,14 @@ char keys[ROWS][COLS] = {
 };
 Keypad keypad = Keypad( makeKeymap(keys), keypadRowPins, keypadColPins, ROWS, COLS );
 
-
 //Mode
 #define  OPT_UNKNOWN    0XFF
 #define  OPT_CREATE     8
-#define  OPT_READ       9
+#define  OPT_QUERY       9
 #define  OPT_MOVE_NEXT  10
 uchar mode = OPT_UNKNOWN;
 
-
-//buffer used to talk with rc522
-#define MAX_BYTES_RECV_FROM_RC522_FIFO 16    //the max response data buffer length, ref: MFRC522_ToCard function
-uchar rcv_buf_from_rc522[MAX_BYTES_RECV_FROM_RC522_FIFO];
-
-
-
-//story number prefix if bind card through keypad
+//story prefix
 const uchar STORY_PREFIX_NUMBER = 2;
 char story_prefixes[STORY_PREFIX_NUMBER][8] = {
   {'R', 'C', 'B', '-', '\0'},
@@ -75,24 +73,30 @@ char story_prefixes[STORY_PREFIX_NUMBER][8] = {
 };
 uchar curStoryPrefix = 0;
 
+//story number
+char storyNumberBuffer[6] = {0};
 
+//Current Swiping Card Information
+uchar currentCardCapacity;
+uchar currentCardId[5]={0};        //4 bytest card id, and 1 byte checksum
+//Last Swiping status
+uchar lastSwipingCardId[4]={0};
+ulong lastSwipingCardTime=0;
 
 //Which block we use to store story number in card?
 #define    BLOCKNUM        4
 //How many bytes we used in this block
 #define BYTES_USED_IN_BLOCK 16
 
-
 //
 #define    OK              0x01
 #define    NOTOK           0x00
-
 
 //Message
 #define  MSG_LEN           19				//(1 + 1 + 16 + 1)
 #define  MSG_START_FLAG     0x3E
 #define  MSG_END_FLAG       0xE3
-uchar msgBuf[MSG_LEN];
+uchar msgBuf[MSG_LEN] = {0};
 
 
 
@@ -103,14 +107,6 @@ void setup() {
     pinMode(buzzerPin, OUTPUT);
     digitalWrite(buzzerPin, LOW);
     
-    //led
-    pinMode(ledRedPin, OUTPUT);
-    digitalWrite(buzzerPin, LOW);
-    pinMode(ledGreenPin, OUTPUT);
-    digitalWrite(buzzerPin, LOW);
-    pinMode(ledBluePin, OUTPUT);
-    digitalWrite(buzzerPin, LOW);
-
     //ttl
     Serial.begin(9600);
     
@@ -124,9 +120,7 @@ void setup() {
     MFRC522_Init();  
 
     //
-    mode = OPT_READ;
-    
- 
+    mode = OPT_QUERY;
 }
 
 
@@ -135,7 +129,32 @@ const int chipSelectPin = 10;//如果控制板为UNO,328,168
 //const int chipSelectPin = 53; //如果控制板为mega 2560,1280
 //const int NRSTPD = 5;
 
-uchar sectorKey[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xff,0x07,0x80,0x69, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uchar sectorKey[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+//uchar defaultControlBlock[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xff,0x07,0x80,0x69, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+//uchar sectorKeys[15][16] = {
+//    {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+//    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+//    {0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5},
+//    {0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5},
+//    {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff},
+//    {0x4d, 0x3a, 0x99, 0xc3, 0x51, 0xdd},
+//    {0x1a, 0x98, 0x2c, 0x7e, 0x45, 0x9a},
+//    {0xd3, 0xf7, 0xd3, 0xf7, 0xd3, 0xf7},
+//    {0x71, 0x4c, 0x5c, 0x88, 0x6e, 0x97},
+//    {0x58, 0x7e, 0xe5, 0xf9, 0x35, 0x0f},
+//    {0xa0, 0x47, 0x8c, 0xc3, 0x90, 0x91},
+//    {0x53, 0x3c, 0xb6, 0xc7, 0x23, 0xf6},
+//    {0x8f, 0xd0, 0xa4, 0xf2, 0x56, 0xe9},
+//    {0xFF, 0xzz, 0xzz, 0xzz, 0xzz, 0xzz},
+//    {0xA0, 0xzz, 0xzz, 0xzz, 0xzz, 0xzz}
+//};
+
+
+//buffer used to talk with rc522
+#define MAX_BYTES_RECV_FROM_RC522_FIFO 16    //the max response data buffer length, ref: MFRC522_ToCard function
+uchar rcv_buf_from_rc522[MAX_BYTES_RECV_FROM_RC522_FIFO];
                                
 //MF522命令字
 #define PCD_IDLE              0x00               //NO action;取消当前命令
@@ -707,28 +726,68 @@ void MFRC522_Halt(void)
 
 //------------------------------------------------------------------------------------------------
 
+#define BEEP(_time)                \
+{                                  \
+  digitalWrite(buzzerPin, HIGH);   \
+  delay(_time);                   \
+  digitalWrite(buzzerPin, LOW);    \
+}
+
+void refreshLCD() 
+{
+    lcd.clear();
+    switch(mode) 
+    {
+        case OPT_CREATE:
+            lcd.print(story_prefixes[curStoryPrefix]);
+            lcd.print(storyNumberBuffer);
+            break;
+        case OPT_QUERY:
+            lcd.print("Query ");
+            break;
+        case OPT_MOVE_NEXT:
+            lcd.print("Move ");
+            break;
+        default:
+            lcd.print("Smart Wall :)");
+            break;
+    }
+}
+
 uchar initCard(uchar blockAddr) {
-    uchar serNum[5];
     uchar flag = 0;
     if (MFRC522_Request(PICC_REQIDL, rcv_buf_from_rc522) == MI_OK)
     {
-        debugInfo("request idle success");
+        debugInfo("request idle ok, type bytes:", 2, rcv_buf_from_rc522);
+        if(rcv_buf_from_rc522[0] == 0x44 && rcv_buf_from_rc522[1]==0x00)
+            debugInfo("Card Type: Mifare_UltraLight");
+        else if (rcv_buf_from_rc522[0] == 0x04 && rcv_buf_from_rc522[1]==0x00)
+            debugInfo("Card Type: Mifare_One_S50");
+        else if (rcv_buf_from_rc522[0] == 0x04 && rcv_buf_from_rc522[1]==0x00)
+            debugInfo("Card Type: Mifare_One_S70");
+        else if (rcv_buf_from_rc522[0] == 0x04 && rcv_buf_from_rc522[1]==0x00)
+            debugInfo("Card Type: Mifare_Pro_X");
+        else if (rcv_buf_from_rc522[0] == 0x04 && rcv_buf_from_rc522[1]==0x00)
+            debugInfo("Card Type: Mifare_DESFire");
+        else
+            debugInfo("Card Type: Unknown!!!");
         flag |= 0x01;
     }
     if (MFRC522_Anticoll(rcv_buf_from_rc522) == MI_OK) 
     {
-        debugInfo("anticoll success. use card: ", 4, rcv_buf_from_rc522);
-        memcpy(serNum, rcv_buf_from_rc522, 5);
+        debugInfo("anticoll ok. card id: ", 5, rcv_buf_from_rc522);
+        memcpy(currentCardId, rcv_buf_from_rc522, 5);
         flag |= 0x02;
     }
-    if (MFRC522_SelectTag(serNum) != 0)
+    currentCardCapacity = MFRC522_SelectTag(currentCardId);
+    if (currentCardCapacity != 0)
     {
-        debugInfo("select card success");
+        debugInfo("select ok, card capacity [K bit] :", 1, &currentCardCapacity);
         flag |= 0x04;
     }
-    if (MFRC522_Auth(PICC_AUTHENT1A, blockAddr, sectorKey, serNum) == MI_OK)
+    if (MFRC522_Auth(PICC_AUTHENT1A, blockAddr, sectorKey, currentCardId) == MI_OK)
     {
-        debugInfo("auth success");
+        debugInfo("auth ok");
         flag |= 0x08;
     }
     
@@ -745,7 +804,7 @@ uchar readCard(uchar blockAddr, uchar *data) {
     status = MFRC522_Read(blockAddr, data);
     if (status == MI_OK)
     {
-        debugInfo("read card success:", 16, data);
+        debugInfo("read card ok:", 16, data);
         return OK;
     }
     return NOTOK;
@@ -756,143 +815,26 @@ uchar writeCard(uchar blockAddr, uchar *data) {
     status = MFRC522_Write(blockAddr, data);
     if (status == MI_OK)
     {
-        debugInfo("write card success:", 16, data);
+        debugInfo("write card ok:", 16, data);
         return OK;
     }
     return NOTOK;
 }
 
-#define BEEP(_time)                \
-{                                  \
-  digitalWrite(buzzerPin, HIGH);   \
-  delay(_time);                   \
-  digitalWrite(buzzerPin, LOW);    \
-}
-
-void refreshLCD() 
-{
-    lcd.clear();
-    switch(mode) 
-    {
-        case OPT_CREATE:
-            lcd.print("Bind ");
-            break;
-        case OPT_READ:
-            lcd.print("Query ");
-            break;
-        case OPT_MOVE_NEXT:
-            lcd.print("Move ");
-            break;
-        default:
-            lcd.print("Smart Wall :)");
-            break;
-    }
-}
-
-uchar rcvStoryNumber(char* str, uchar maxLen)
-{
-    unsigned long startTime;
-    #define RCV_FIRST_BYTE_TIMEOUT 1000
-    
-    //send request
-    memset(msgBuf, 0x00, MSG_LEN); msgBuf[0] = MSG_START_FLAG; msgBuf[MSG_LEN-1] = MSG_END_FLAG;
-    msgBuf[1] = OPT_CREATE;
-    debugInfo("- Msg Start -");
-    Serial.write(msgBuf, MSG_LEN);
-    debugInfo("- Msg End -");
-
-    //receive response
-    startTime = millis();
-    memset(msgBuf, 0x00, MSG_LEN);
-    while(Serial.read() != MSG_START_FLAG && (millis()-startTime)<RCV_FIRST_BYTE_TIMEOUT) ;
-    if(millis()-startTime < RCV_FIRST_BYTE_TIMEOUT)
-    {
-        msgBuf[0] = MSG_START_FLAG;
-        debugInfo("Hi I got 3E");
-        Serial.setTimeout(1000);
-        Serial.readBytes((char*)(&msgBuf[1]), MSG_LEN-1);
-        strcpy(str, (char*)(&msgBuf[2]));
-        debugInfo("Response Msg Start -------");
-        debugInfo(" ", MSG_LEN, msgBuf);
-        debugInfo("------- End");
-        return strlen(str);
-    }
-    debugInfo("Fail to get story number from proxy");
-    return 0;  
-}
-
-uchar getStoryNumber(char* str, uchar maxLen)
-{
-    char key;
-    uchar len = 0;
-
-    refreshLCD();
-    memset(str, 0, maxLen);
-    strcpy(str, story_prefixes[curStoryPrefix]);      //add prefix
-    len = strlen(str);
-    lcd.print(str);
-    
-    while(1)
-    {
-        key=keypad.getKey();
-
-        if(key!=NO_KEY && key>='0' && key<='9')      //
-        {
-            str[len++] = key;
-            BEEP(80);
-            lcd.print(key);
-        }
-
-        if(len>=(maxLen-1) || key=='A')  break;        //finish input
-
-        if(key=='B')                              //cancel input
-        {
-            memset(str, 0, maxLen);
-            len=0;
-            debugInfo("Cancel to input story number:");
-            BEEP(200);
-            break;
-        }
-
-        if(key=='C')                            //switch project
-        {
-            curStoryPrefix++;
-            if(curStoryPrefix >= STORY_PREFIX_NUMBER)
-            {
-                curStoryPrefix = 0;
-            }
-
-            refreshLCD();
-            memset(str, 0, maxLen);
-            strcpy(str, story_prefixes[curStoryPrefix]);      //add prefix
-            len = strlen(str);
-            lcd.print(str);
-
-            BEEP(50); delay(100); BEEP(50);
-            continue;
-        }        
-    }
-    str[len] = '\0';        //end with '\0'
-    
-    debugInfo("Story Number:");
-    debugInfo(str);
-
-    return len;
-}
-
 void processCard()
 {
     uchar writeData[BYTES_USED_IN_BLOCK];
-    char* currentCardNumber = (char*)writeData;
+    char* storyNumber = (char*)writeData;
 
     //find and open card
+    //  currentCardId & currentCardCapacity will be updated
     if(initCard(BLOCKNUM) == NOTOK)
     {
         MFRC522_Halt();
         return;
-    }
+    } 
     
-    //get story number from card
+    //get current story number from card
     debugInfo("Get Current Story Number");
     memset(rcv_buf_from_rc522, 0, MAX_BYTES_RECV_FROM_RC522_FIFO);
     if(readCard(BLOCKNUM, rcv_buf_from_rc522)==NOTOK)
@@ -900,66 +842,93 @@ void processCard()
         MFRC522_Halt();
         return;
     }
-    memcpy(writeData, rcv_buf_from_rc522, BYTES_USED_IN_BLOCK);
-
-    //
-    BEEP(400);
+    memcpy(storyNumber, rcv_buf_from_rc522, BYTES_USED_IN_BLOCK);
     
+    //detect query & move mode?
+    unsigned long currentTime = millis();
+    if( (mode==OPT_QUERY || mode==OPT_MOVE_NEXT) )
+    {
+//        if(lastSwipingCardTime > currentTime)          //when timer overflow
+//            mode = OPT_QUERY;
+//        else if( (memcmp(lastSwipingCardId, currentCardId, sizeof(lastSwipingCardId))==0)  && (currentTime-lastSwipingCardTime)<10000 )    //when swiping same card twice in then seconds
+//            mode = OPT_MOVE_NEXT;
+//        else                                            //swiping another card
+//            mode = OPT_QUERY;
+//        
+//        lastSwipingCardTime = currentTime;
+//        memcpy(lastSwipingCardId, currentCardId, sizeof(lastSwipingCardId));
+
+        if(lastSwipingCardTime > currentTime)          //when timer overflow
+            mode = OPT_QUERY;
+        else if( mode==OPT_MOVE_NEXT )                //already move? back to query
+            mode = OPT_QUERY;
+        else if( (memcmp(lastSwipingCardId, currentCardId, sizeof(lastSwipingCardId))==0) && (currentTime-lastSwipingCardTime)<10000 )    //when swiping same card twice in then seconds
+            mode = OPT_MOVE_NEXT;
+        else                                            //swiping another card
+            mode = OPT_QUERY;
+        
+        lastSwipingCardTime = currentTime;
+        memcpy(lastSwipingCardId, currentCardId, sizeof(lastSwipingCardId));
+    }
+   
     //send request to proxy to operate story card       
     if(mode == OPT_CREATE) 
     {
-        debugInfo("> Bind");
+        //assemble story id
+        memset(writeData, 0, sizeof(writeData));
+        strcpy((char*)writeData, story_prefixes[curStoryPrefix]);
+        iTemp = strlen((char*)writeData);
+        strcpy((char*)(writeData+iTemp), storyNumberBuffer);
+        
+        debugInfo("> Create Card : ", (char*)writeData);
 
-        //get story number form proxy or keypad
-        boolean rcvStoryNumberOk = false;
-        if( rcvStoryNumber((char*)writeData, BYTES_USED_IN_BLOCK) > 0 )
-        {
-            rcvStoryNumberOk = true;
-        }
-        else if( getStoryNumber((char*)writeData, BYTES_USED_IN_BLOCK) > 0 )
-        {
-            rcvStoryNumberOk = true;
-        }        
-        if( rcvStoryNumberOk )
-        {   
-            writeCard(BLOCKNUM, writeData);
-            
-            BEEP(80); delay(100); BEEP(80); delay(100); BEEP(80);            
-        }
-    } 
-    else if(mode == OPT_READ) 
-    {
-        debugInfo("> Query");
+        //save story id to card     
+        writeCard(BLOCKNUM, writeData);    
+        
+        BEEP(50); delay(60); BEEP(50); delay(60); BEEP(50);
 
-        //generate and send out request
-        memset(msgBuf, 0x00, MSG_LEN); msgBuf[0] = MSG_START_FLAG; msgBuf[MSG_LEN-1] = MSG_END_FLAG;
-        msgBuf[1] = OPT_READ;
-        memcpy(&msgBuf[2], currentCardNumber, BYTES_USED_IN_BLOCK);
-        debugInfo("Send Msg: ", MSG_LEN, msgBuf);
-        debugInfo("- Msg Start -");
-        Serial.write(msgBuf, MSG_LEN);
-        debugInfo("- Msg End -");
-
-        //output card number on lcd
+        //back to query mode
+        memset(storyNumberBuffer, 0, sizeof(storyNumberBuffer));
+        mode=OPT_QUERY;
         refreshLCD();
-        lcd.print(currentCardNumber);
     } 
-    else if(mode == OPT_MOVE_NEXT) 
+    else if(mode == OPT_QUERY) 
     {
-        debugInfo("> Move");
+        debugInfo("> Query Card : ", storyNumber);
 
         //generate and send out request
         memset(msgBuf, 0x00, MSG_LEN); msgBuf[0] = MSG_START_FLAG; msgBuf[MSG_LEN-1] = MSG_END_FLAG;
-        msgBuf[1] = OPT_MOVE_NEXT;
-        memcpy(&msgBuf[2], currentCardNumber, BYTES_USED_IN_BLOCK);
+        msgBuf[1] = OPT_QUERY;
+        memcpy(&msgBuf[2], storyNumber, BYTES_USED_IN_BLOCK);
         debugInfo("Send Msg: ", MSG_LEN, msgBuf);
         debugInfo("- Msg Start -");
         Serial.write(msgBuf, MSG_LEN);
         debugInfo("- Msg End -");
         
+        BEEP(60);
+
         //output card number on lcd
         refreshLCD();
-        lcd.print(currentCardNumber);
+        lcd.print(storyNumber);
+    } 
+    else if(mode == OPT_MOVE_NEXT) 
+    {
+        debugInfo("> Move Card : ", storyNumber);
+
+        //generate and send out request
+        memset(msgBuf, 0x00, MSG_LEN); msgBuf[0] = MSG_START_FLAG; msgBuf[MSG_LEN-1] = MSG_END_FLAG;
+        msgBuf[1] = OPT_MOVE_NEXT;
+        memcpy(&msgBuf[2], storyNumber, BYTES_USED_IN_BLOCK);
+        debugInfo("Send Msg: ", MSG_LEN, msgBuf);
+        debugInfo("- Msg Start -");
+        Serial.write(msgBuf, MSG_LEN);
+        debugInfo("- Msg End -");
+        
+        BEEP(40); delay(50); BEEP(40);
+
+        //output card number on lcd
+        refreshLCD();
+        lcd.print(storyNumber);
     }
     else
     {
@@ -969,48 +938,59 @@ void processCard()
     MFRC522_Halt();    
 }
 
-void detechModeChange(char key)
-{
-    boolean modeChanged = false;
-    
-    if(key=='#' || key=='*')                      //mode switching
-    {
-        switch(mode)
-        {
-            case OPT_CREATE:
-                mode = OPT_READ;
-                break;
-            case OPT_READ:
-                mode = OPT_MOVE_NEXT;
-                break;
-            case OPT_MOVE_NEXT:
-                mode = OPT_CREATE;
-                break;
-            default:
-                mode = OPT_UNKNOWN;
-                break;            
-        }
-        modeChanged = true;
-    }
-
-    else if(key=='1')                                  //mode choice
-    {  mode = OPT_READ; modeChanged=true;  }
-    else if(key=='2')
-    {  mode = OPT_MOVE_NEXT; modeChanged=true;  }
-    else if(key=='0')
-    {  mode = OPT_CREATE; modeChanged=true;  }
-    
-    if(modeChanged)
-      BEEP(200); refreshLCD(); debugInfo("Mode change to : ", 1, &mode);
-}
-
-
-void loop()
+void gatherInputData()
 {
     char key=keypad.getKey();
-    if(key!=NO_KEY)  detechModeChange(key);
+    if(key==NO_KEY)  return; 
+    
+    //detect whether change to create mode? OR change back to read mode
+    if( (key=='#' || (key>='0' && key<='9'))
+         && mode != OPT_CREATE )
+    {
+        mode=OPT_CREATE;
+        memset(storyNumberBuffer, 0, sizeof(storyNumberBuffer));     
+    }
+    if( mode==OPT_CREATE && key=='*')
+    {
+        mode=OPT_QUERY;
+        refreshLCD();
+        BEEP(80);
+    }
+    
+    //
+    if(mode!=OPT_CREATE)  return;
+    
+    //change project prefix for create mode
+    if(key=='#')
+    {
+        curStoryPrefix++;
+        if(curStoryPrefix >= STORY_PREFIX_NUMBER)  curStoryPrefix = 0;
+
+        BEEP(50); delay(100); BEEP(50);
+    }
+  
+    //get story number in create mode
+    else if(key>='0' && key<='9')
+    {
+        int iTemp = strlen(storyNumberBuffer);
+        if( iTemp >= (sizeof(storyNumberBuffer)-1) )
+        {
+            debugInfo("too much data");
+            BEEP(20); delay(30); BEEP(20);
+        }
+        else
+        {
+            storyNumberBuffer[iTemp] = key;
+            BEEP(30);
+        }
+    }
+    
+    refreshLCD();
+}
+
+void loop()
+{ 
+    gatherInputData();
     
     processCard();
 }
-
-
